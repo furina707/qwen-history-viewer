@@ -521,24 +521,79 @@ class QwenHistoryViewer:
         
         # 获取所有项目目录
         projects = []
+        project_cwd_map = {}  # 编码名 -> 原始 cwd 路径
+        
         for item in self.projects_dir.iterdir():
             if item.is_dir():
-                project_name = item.name.replace("--", "/").replace("c-", "C:").replace("_user_", "_")
+                encoded_name = item.name
+                # 尝试从会话文件中读取原始的 cwd 路径
+                cwd_path = None
+                chats_dir = item / "chats"
+                if chats_dir.exists():
+                    session_files = list(chats_dir.glob("*.jsonl"))
+                    if session_files:
+                        try:
+                            with open(session_files[0], 'r', encoding='utf-8') as f:
+                                first_line = f.readline()
+                                if first_line:
+                                    data = json.loads(first_line)
+                                    cwd_path = data.get('cwd', None)
+                        except Exception:
+                            pass
+                
+                # 如果没有找到 cwd，使用解码后的路径
+                if cwd_path:
+                    project_name = cwd_path
+                else:
+                    # 解码项目名称（注意顺序：先替换 c- 为 C:，再替换 -- 为 /）
+                    project_name = encoded_name.replace("c-", "C:").replace("--", "/").replace("_user_", "_")
+                
                 projects.append((project_name, item))
+                project_cwd_map[project_name] = cwd_path
                 self.stats['projects_count'] += 1
-        
+
         if not projects:
             self.status_var.set("未找到任何项目")
             self._update_stats_display()
             return
-        
-        # 填充项目下拉框
-        self.project_combo["values"] = [p[0] for p in projects]
+
+        # 填充项目下拉框（显示友好路径）
+        friendly_names = []
+        for name, _ in projects:
+            # 将路径转换为更友好的显示格式
+            friendly_name = name.replace("\\", "/")
+            friendly_names.append(friendly_name)
+
+        self.project_combo["values"] = friendly_names
         self.stats['total_projects'] = len(projects)
-        
+
         self.status_var.set(f"找到 {len(projects)} 个项目")
         self._update_stats_display()
-    
+
+    def _find_project_dir(self, project_name):
+        """根据项目名称查找实际的项目目录"""
+        # 尝试从会话文件中查找匹配的 cwd
+        for item in self.projects_dir.iterdir():
+            if item.is_dir():
+                chats_dir = item / "chats"
+                if chats_dir.exists():
+                    session_files = list(chats_dir.glob("*.jsonl"))
+                    if session_files:
+                        try:
+                            with open(session_files[0], 'r', encoding='utf-8') as f:
+                                first_line = f.readline()
+                                if first_line:
+                                    data = json.loads(first_line)
+                                    cwd = data.get('cwd', '')
+                                    if cwd and (cwd == project_name or cwd.replace("\\", "/") == project_name):
+                                        return item
+                        except Exception:
+                            continue
+        
+        # 如果没有找到，使用编码方式
+        encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
+        return self.projects_dir / encoded_name
+
     def _on_project_selected(self, event):
         """当选择项目时加载会话"""
         project_name = self.project_var.get()
@@ -551,9 +606,8 @@ class QwenHistoryViewer:
         self.delete_project_btn.config(state=tk.NORMAL)
         self.open_cli_btn.config(state=tk.NORMAL)
 
-        # 编码项目名称
-        encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
-        project_dir = self.projects_dir / encoded_name
+        # 查找项目目录
+        project_dir = self._find_project_dir(project_name)
         chats_dir = project_dir / "chats"
         
         # 清空会话列表
@@ -987,9 +1041,8 @@ class QwenHistoryViewer:
             messagebox.showwarning("警告", "请先选择一个项目")
             return
 
-        # 编码项目名称以找到实际目录
-        encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
-        project_dir = self.projects_dir / encoded_name
+        # 查找项目目录
+        project_dir = self._find_project_dir(project_name)
 
         if not project_dir.exists():
             messagebox.showerror("错误", f"项目目录不存在：{project_dir}")
@@ -1060,9 +1113,8 @@ class QwenHistoryViewer:
 
         try:
             import subprocess
-            # 编码项目名称以找到实际目录
-            encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
-            project_dir = self.projects_dir / encoded_name
+            # 查找项目目录
+            project_dir = self._find_project_dir(project_name)
 
             if not project_dir.exists():
                 messagebox.showerror("错误", f"项目目录不存在：{project_dir}")
@@ -1082,8 +1134,8 @@ class QwenHistoryViewer:
 
             # qwen CLI 基于当前工作目录来查找会话
             # 需要在项目对应的实际工作目录下运行 qwen
-            # 对于桌面项目，在桌面目录下运行
-            work_dir = Path.home() / "Desktop" if "desktop" in project_name.lower() else project_dir
+            # 使用 project_name 作为工作目录（它是原始的 cwd 路径）
+            work_dir = project_name if self.current_session else Path.home() / "Desktop"
 
             # 使用 cmd.exe 新建窗口
             cmd_command = f'cmd.exe /k "cd /d {work_dir} && qwen {context_arg}"'
@@ -1355,11 +1407,11 @@ Qwen CLI 历史记录查看器 - 增强版
 def main():
     """主函数"""
     root = tk.Tk()
-    
+
     # 设置样式
     style = ttk.Style()
     style.theme_use('clam')
-    
+
     app = QwenHistoryViewer(root)
     root.mainloop()
 
