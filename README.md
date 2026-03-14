@@ -27,12 +27,12 @@
 pythonw qwen_history_gui.pyw
 
 # 或显示终端
-python qwen_history_gui.py
+python qwen_history_gui.pyw
 ```
 
 **Linux/Mac:**
 ```bash
-python3 qwen_history_gui.py
+python3 qwen_history_gui.pyw
 ```
 
 ### 快捷键
