@@ -151,8 +151,11 @@ class QwenHistoryViewer:
         menubar.add_cascade(label="文件", menu=file_menu)
         file_menu.add_command(label="刷新会话列表", command=self._load_sessions, accelerator="F5")
         file_menu.add_separator()
+        file_menu.add_command(label="打开 qwen CLI", command=self._open_qwen_cli, accelerator="Ctrl+O")
         file_menu.add_command(label="导出当前会话", command=self._export_session, accelerator="Ctrl+E")
         file_menu.add_command(label="导出所有会话", command=self._export_all_sessions)
+        file_menu.add_separator()
+        file_menu.add_command(label="删除当前项目", command=self._delete_project, accelerator="Ctrl+Delete")
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.root.quit, accelerator="Alt+F4")
         
@@ -191,6 +194,8 @@ class QwenHistoryViewer:
         self.root.bind('<Control-d>', lambda e: self._toggle_favorite())
         self.root.bind('<Control-t>', lambda e: self._toggle_theme())
         self.root.bind('<Control-c>', lambda e: self._copy_message())
+        self.root.bind('<Control-Delete>', lambda e: self._delete_project())
+        self.root.bind('<Control-o>', lambda e: self._open_qwen_cli())
     
     def _create_toolbar(self, parent):
         """创建顶部工具栏"""
@@ -228,9 +233,27 @@ class QwenHistoryViewer:
         # 工具按钮
         self.refresh_btn = ttk.Button(toolbar, text="🔄 刷新", command=self._load_sessions)
         self.refresh_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
+
         self.theme_btn = ttk.Button(toolbar, text="🌙 深色", command=self._toggle_theme)
         self.theme_btn.pack(side=tk.LEFT)
+
+        # 打开 CLI 按钮
+        self.open_cli_btn = ttk.Button(
+            toolbar,
+            text="💬 打开 CLI",
+            command=self._open_qwen_cli
+        )
+        self.open_cli_btn.pack(side=tk.LEFT, padx=(10, 5))
+        self.open_cli_btn.config(state=tk.DISABLED)
+
+        # 删除项目按钮
+        self.delete_project_btn = ttk.Button(
+            toolbar,
+            text="🗑️ 删除项目",
+            command=self._delete_project
+        )
+        self.delete_project_btn.pack(side=tk.LEFT, padx=(10, 5))
+        self.delete_project_btn.config(state=tk.DISABLED)
         
         # 统计信息快速查看
         self.quick_stats_label = ttk.Label(toolbar, text="", foreground="gray")
@@ -520,8 +543,14 @@ class QwenHistoryViewer:
         """当选择项目时加载会话"""
         project_name = self.project_var.get()
         if not project_name:
+            self.delete_project_btn.config(state=tk.DISABLED)
+            self.open_cli_btn.config(state=tk.DISABLED)
             return
-        
+
+        # 启用按钮
+        self.delete_project_btn.config(state=tk.NORMAL)
+        self.open_cli_btn.config(state=tk.NORMAL)
+
         # 编码项目名称
         encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
         project_dir = self.projects_dir / encoded_name
@@ -929,14 +958,14 @@ class QwenHistoryViewer:
         if not selection:
             messagebox.showwarning("警告", "请先选择一个会话")
             return
-        
+
         if not messagebox.askyesno("确认", "确定要删除选中的会话吗？\n此操作不可恢复！"):
             return
-        
+
         index = selection[0]
         session_id = list(self.sessions.keys())[index]
         session_file = self.sessions[session_id]['file']
-        
+
         try:
             session_file.unlink()
             self.favorites.discard(session_id)
@@ -950,7 +979,120 @@ class QwenHistoryViewer:
             self.status_var.set(f"已删除会话：{session_id}")
         except Exception as e:
             messagebox.showerror("错误", f"删除失败：{e}")
-    
+
+    def _delete_project(self):
+        """删除当前项目"""
+        project_name = self.project_var.get()
+        if not project_name:
+            messagebox.showwarning("警告", "请先选择一个项目")
+            return
+
+        # 编码项目名称以找到实际目录
+        encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
+        project_dir = self.projects_dir / encoded_name
+
+        if not project_dir.exists():
+            messagebox.showerror("错误", f"项目目录不存在：{project_dir}")
+            return
+
+        # 统计项目中的会话数量
+        chats_dir = project_dir / "chats"
+        session_count = 0
+        if chats_dir.exists():
+            session_count = len(list(chats_dir.glob("*.jsonl")))
+
+        # 确认对话框
+        confirm_msg = f"""确定要删除项目 "{project_name}" 吗？
+
+此操作将删除：
+• 项目目录：{encoded_name}
+• 会话文件：{session_count} 个
+• 所有聊天记录和上下文
+
+⚠️ 此操作不可恢复！"""
+
+        if not messagebox.askyesno("确认删除项目", confirm_msg, icon='warning'):
+            return
+
+        # 二次确认
+        if not messagebox.askyesno("最终确认", "这是最后确认！\n\n删除后所有聊天记录将永久丢失！\n\n确定要继续吗？", icon='warning'):
+            return
+
+        try:
+            # 删除项目目录
+            import shutil
+            shutil.rmtree(project_dir)
+
+            # 清理收藏中属于该项目的会话
+            if chats_dir.exists():
+                for session_file in chats_dir.glob("*.jsonl"):
+                    self.favorites.discard(session_file.stem)
+            self._save_favorites()
+
+            # 刷新界面
+            self.project_combo.set("")
+            self.session_listbox.delete(0, tk.END)
+            self.sessions.clear()
+            self.current_session = None
+            self._clear_message_display()
+            self.export_btn.config(state=tk.DISABLED)
+            self.delete_project_btn.config(state=tk.DISABLED)
+
+            # 更新统计
+            self.stats['projects_count'] -= 1
+            self.stats['total_sessions'] = 0
+            self._update_stats_display()
+
+            # 重新加载项目列表
+            self._load_sessions()
+
+            self.status_var.set(f"已删除项目：{project_name}")
+            messagebox.showinfo("成功", f"项目 '{project_name}' 已成功删除！")
+        except Exception as e:
+            messagebox.showerror("错误", f"删除项目失败：{e}")
+
+    def _open_qwen_cli(self):
+        """打开当前项目的 qwen CLI，并加载历史上下文"""
+        project_name = self.project_var.get()
+        if not project_name:
+            messagebox.showwarning("警告", "请先选择一个项目")
+            return
+
+        try:
+            import subprocess
+            # 编码项目名称以找到实际目录
+            encoded_name = project_name.replace("C:", "c-").replace("/", "--").replace("_", "_user_")
+            project_dir = self.projects_dir / encoded_name
+
+            if not project_dir.exists():
+                messagebox.showerror("错误", f"项目目录不存在：{project_dir}")
+                return
+
+            # 构建 qwen 命令参数
+            # 如果有选中的会话，使用 --resume 加载该会话
+            # 否则使用 --continue 加载最近的会话
+            if self.current_session and self.current_session in self.sessions:
+                # 使用选中的会话 ID
+                context_arg = f'-r {self.current_session}'
+                tip = f'已选择会话：{self.current_session[:8]}...'
+            else:
+                # 默认使用 --continue 加载最近的会话
+                context_arg = '-c'
+                tip = '正在加载最近的会话'
+
+            # qwen CLI 基于当前工作目录来查找会话
+            # 需要在项目对应的实际工作目录下运行 qwen
+            # 对于桌面项目，在桌面目录下运行
+            work_dir = Path.home() / "Desktop" if "desktop" in project_name.lower() else project_dir
+
+            # 使用 cmd.exe 新建窗口
+            cmd_command = f'cmd.exe /k "cd /d {work_dir} && qwen {context_arg}"'
+            subprocess.Popen(cmd_command)
+
+            self.status_var.set(f"已打开项目 '{project_name}' 的 qwen CLI ({tip})")
+        except Exception as e:
+            messagebox.showerror("错误", f"打开 qwen CLI 失败：{e}")
+
     def _export_session(self):
         """导出当前会话"""
         if not self.current_session:
@@ -1152,6 +1294,17 @@ Qwen CLI 历史记录查看器 - 使用说明
 • 点击导出按钮保存当前会话
 • 文件菜单可导出所有会话
 
+🗑️ 删除功能:
+• 删除会话：选中会话后点击删除按钮
+• 删除项目：选择项目后点击"删除项目"按钮
+• 快捷键：Ctrl+Delete 删除当前项目
+• ⚠️ 删除项目需要二次确认，请谨慎操作！
+
+💬 打开 CLI:
+• 选择项目后点击"打开 CLI"按钮
+• 或快捷键 Ctrl+O
+• 会在新窗口中打开该项目的 qwen CLI
+
 🌙 主题切换:
 • 点击深色/浅色按钮切换主题
 • 快捷键：Ctrl+T
@@ -1163,6 +1316,8 @@ Qwen CLI 历史记录查看器 - 使用说明
 • Ctrl+D: 收藏
 • Ctrl+T: 切换主题
 • Ctrl+C: 复制
+• Ctrl+O: 打开 qwen CLI
+• Ctrl+Delete: 删除当前项目
 """
         help_window = tk.Toplevel(self.root)
         help_window.title("使用说明")
@@ -1178,7 +1333,7 @@ Qwen CLI 历史记录查看器 - 使用说明
         about_text = """
 Qwen CLI 历史记录查看器 - 增强版
 
-版本：2.0
+版本：2.2
 作者：AI Assistant
 
 功能特性:
@@ -1189,6 +1344,8 @@ Qwen CLI 历史记录查看器 - 增强版
 • 深色/浅色主题切换
 • 实时统计信息
 • 右键菜单操作
+• 删除会话和项目
+• 快速打开 qwen CLI
 
 感谢使用！
 """
