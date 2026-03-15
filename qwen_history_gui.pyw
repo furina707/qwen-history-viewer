@@ -1054,6 +1054,9 @@ class QwenHistoryViewer:
         if chats_dir.exists():
             session_count = len(list(chats_dir.glob("*.jsonl")))
 
+        # 获取编码后的目录名用于显示
+        encoded_name = project_dir.name
+
         # 确认对话框
         confirm_msg = f"""确定要删除项目 "{project_name}" 吗？
 
@@ -1072,8 +1075,8 @@ class QwenHistoryViewer:
             return
 
         try:
-            # 删除项目目录
             import shutil
+            # 删除项目目录
             shutil.rmtree(project_dir)
 
             # 清理收藏中属于该项目的会话
@@ -1082,22 +1085,26 @@ class QwenHistoryViewer:
                     self.favorites.discard(session_file.stem)
             self._save_favorites()
 
-            # 刷新界面
+            # 从下拉框中移除已删除的项目
+            current_values = list(self.project_combo["values"])
+            if project_name in current_values:
+                current_values.remove(project_name)
+            self.project_combo["values"] = current_values
             self.project_combo.set("")
+
+            # 清空界面
             self.session_listbox.delete(0, tk.END)
             self.sessions.clear()
             self.current_session = None
             self._clear_message_display()
             self.export_btn.config(state=tk.DISABLED)
             self.delete_project_btn.config(state=tk.DISABLED)
+            self.open_cli_btn.config(state=tk.DISABLED)
 
             # 更新统计
-            self.stats['projects_count'] -= 1
+            self.stats['projects_count'] = len(current_values)
             self.stats['total_sessions'] = 0
             self._update_stats_display()
-
-            # 重新加载项目列表
-            self._load_sessions()
 
             self.status_var.set(f"已删除项目：{project_name}")
             messagebox.showinfo("成功", f"项目 '{project_name}' 已成功删除！")
